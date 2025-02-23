@@ -1,100 +1,60 @@
-'''
-filename: utils.py
-functions: encode_features, get_train_model
-creator: shashank.gupta
-version: 1
-'''
-#############################################################################
-# Import necessary modules and files
-# #############################################################################
+# utils.py - Training Pipeline Utilities
 
-import pandas as pd
 import os
 import sqlite3
-from sqlite3 import Error
-import sys
+import pandas as pd
+import pickle
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report
+from constants import DB_NAME, MODEL_PATH
 
-sys.path.append('/home/Assignment/')  
-sys.path.append('/home/Assignment/airflow/dags/')  
-
-from constants import DB_FILE_NAME, DB_PATH, DATA_DIRECTORY, INTERACTION_MAPPING
-
-from mapping.city_tier_mapping import city_tier_mapping
-from mapping.significant_categorical_level import list_platform, list_medium, list_source
-
-###############################################################################
-# Define function to initialize the database
-# ##############################################################################
-
-def build_dbs():
-    try:
-        db_full_path = os.path.join(DB_PATH, DB_FILE_NAME)
-        print("Initializing Database at:", db_full_path)
-        
-        conn = sqlite3.connect(db_full_path)
-        cursor = conn.cursor()
-        
-        # Create necessary tables if they do not exist
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS loaded_data (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                city_mapped TEXT,
-                first_platform_c TEXT,
-                first_utm_medium_c TEXT,
-                first_utm_source_c TEXT
-            )
-        ''')
-
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS city_tier_mapped (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                city_mapped TEXT,
-                city_tier INTEGER
-            )
-        ''')
-
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS categorical_variables_mapped (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                first_platform_c TEXT,
-                first_utm_medium_c TEXT,
-                first_utm_source_c TEXT
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
-        print("Database initialized successfully.")
-    except Exception as e:
-        print(f"Error in database initialization: {e}")
-
-###############################################################################
-# Define function to encode categorical features
-# ##############################################################################
-
-def encode_features(df):
-    df["first_platform_c"] = df["first_platform_c"].apply(lambda x: x if x in list_platform else "others")
-    df["first_utm_medium_c"] = df["first_utm_medium_c"].apply(lambda x: x if x in list_medium else "others")
-    df["first_utm_source_c"] = df["first_utm_source_c"].apply(lambda x: x if x in list_source else "others")
+def load_training_data():
+    """
+    Load training data from the cleaning pipeline database.
+    Assumes the final cleaning output is in the table 'interactions_mapped_test_case'.
+    """
+    conn = sqlite3.connect(DB_NAME)
+    df = pd.read_sql_query("SELECT * FROM interactions_mapped_test_case", conn)
+    conn.close()
+    print("Training data loaded with shape:", df.shape)
     return df
 
-###############################################################################
-# Define function to train and get model
-# ##############################################################################
+def preprocess_data(df):
+    """
+    Preprocess the training data.
+    Assumes the target variable is 'app_complete_flag' and features are:
+    'total_leads_droppped', 'city_tier', 'referred_lead', 'first_platform_c',
+    'first_utm_medium_c', and 'first_utm_source_c'.
+    One-hot encode categorical variables.
+    """
+    features = ['total_leads_droppped', 'city_tier', 'referred_lead',
+                'first_platform_c', 'first_utm_medium_c', 'first_utm_source_c']
+    target = 'app_complete_flag'
+    X = df[features]
+    y = df[target]
+    X = pd.get_dummies(X, columns=['first_platform_c', 'first_utm_medium_c', 'first_utm_source_c'], drop_first=True)
+    print("Preprocessing completed. Feature matrix shape:", X.shape)
+    return X, y
 
-def get_train_model(df):
-    from pycaret.classification import setup, compare_models
-    import mlflow
-    
-    exp1 = setup(data=df, target='app_complete_flag', normalize=False, transformation=False, silent=True, 
-                 remove_perfect_collinearity=True, session_id=42)
-    best_model = compare_models()
-    mlflow.set_tracking_uri("http://localhost:6006")
-    mlflow.set_experiment("Lead Scoring Training")
-    
-    with mlflow.start_run():
-        mlflow.pycaret.log_model(best_model, "lead_scoring_model")
-    
-    return best_model
+def train_model(X, y):
+    """
+    Train a logistic regression model and evaluate it.
+    """
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    model = LogisticRegression(max_iter=1000)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    acc = accuracy_score(y_test, y_pred)
+    print("Test Accuracy:", acc)
+    print("Classification Report:")
+    print(classification_report(y_test, y_pred))
+    return model
 
-print("Updated utils.py Loaded Successfully")
+def save_model(model):
+    """
+    Save the trained model to disk.
+    """
+    with open(MODEL_PATH, 'wb') as f:
+        pickle.dump(model, f)
+    print("Model saved to", MODEL_PATH)

@@ -1,29 +1,26 @@
 """
 utils.py - Data Pipeline Utilities
 
-This module implements the data cleaning pipeline in four steps:
-  1. load_data_into_db: Load the CSV into a table (loaded_data_test_case) using the full raw schema (45 columns).
-  2. map_city_tier: Map the 'city_mapped' column using CITY_TIER_MAPPING, then rename it to 'city_tier'.
-  3. map_categorical_vars: Process categorical columns on the mapped table.
-  4. interactions_mapping: Produce the final table with the model input schema (7 columns), as expected by unit tests.
+This module implements the data cleaning pipeline in five steps:
+  1. build_dbs(): Initialize the database.
+  2. load_data_into_db(): Load the CSV into the DB using the full raw schema (45 columns).
+  3. map_city_tier(): Map the 'city_mapped' column using CITY_TIER_MAPPING, then rename it to 'city_tier'.
+  4. map_categorical_vars(): Convert insignificant categorical values to "others".
+  5. interactions_mapping(): Map interaction columns to create a final table.
 """
 
 import os
 import sqlite3
 import pandas as pd
-
 from constants import DB_NAME, LEADSCORING_TEST_CSV, UNIT_TEST_DB_FILE_NAME
-from significant_categorical_level import SIGNIFICANT_PLATFORM, SIGNIFICANT_UTM_MEDIUM, SIGNIFICANT_UTM_SOURCE
 from city_tier_mapping import CITY_TIER_MAPPING
+from significant_categorical_level import SIGNIFICANT_PLATFORM, SIGNIFICANT_UTM_MEDIUM, SIGNIFICANT_UTM_SOURCE
 from schema import raw_data_schema, model_input_schema
 
 # For missing numeric columns, use 0; for others, use an empty string.
 numeric_defaults = {"total_leads_droppped", "referred_lead", "app_complete_flag"}
 
 def build_dbs():
-    """
-    Initialize the database by removing any existing DB file and dropping tables.
-    """
     if os.path.isfile(DB_NAME):
         os.remove(DB_NAME)
         print(f"Existing database '{DB_NAME}' removed.")
@@ -38,11 +35,6 @@ def build_dbs():
     print("Database initialized.")
 
 def load_data_into_db():
-    """
-    Load data from the CSV into 'loaded_data_test_case' using the full raw schema.
-    The CSV has 13 columns; rename the CSV column 'city_tier' to 'city_mapped' (to match raw_data_schema)
-    and add missing columns with default values so that the table has 45 columns.
-    """
     try:
         df = pd.read_csv(LEADSCORING_TEST_CSV)
         print(f"CSV file '{LEADSCORING_TEST_CSV}' successfully read.")
@@ -50,19 +42,16 @@ def load_data_into_db():
         print(f"Error reading CSV file: {e}")
         return
 
-    # Rename CSV column "city_tier" to "city_mapped" if necessary.
+    # The CSV contains 13 columns; rename "city_tier" to "city_mapped"
     if 'city_tier' in df.columns and 'city_mapped' not in df.columns:
         df = df.rename(columns={'city_tier': 'city_mapped'})
     
-    # Add missing columns from raw_data_schema with defaults.
+    # Add missing columns from raw_data_schema with default values.
     for col in raw_data_schema:
         if col not in df.columns:
-            if col in numeric_defaults:
-                df[col] = 0
-            else:
-                df[col] = ""
+            df[col] = 0 if col in numeric_defaults else ""
     
-    # Reorder DataFrame to match raw_data_schema (45 columns)
+    # Reorder to match raw_data_schema (45 columns)
     df = df[raw_data_schema]
     
     conn = sqlite3.connect(DB_NAME)
@@ -72,34 +61,21 @@ def load_data_into_db():
     print("Data loaded into 'loaded_data_test_case'.")
 
 def map_city_tier():
-    """
-    Map city tiers for the loaded data.
-    Reads from 'loaded_data_test_case', applies CITY_TIER_MAPPING to the 'city_mapped' column
-    (defaulting to 3 if not found), then renames it to 'city_tier' and writes the output to
-    'city_tier_mapped_test_case' using the full schema.
-    """
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query("SELECT * FROM loaded_data_test_case", conn)
-    
     print("Columns in loaded_data_test_case:", df.columns.tolist())
     
     if 'city_mapped' not in df.columns:
-        print("Column 'city_mapped' not found in data.")
+        print("Column 'city_mapped' not found.")
         conn.close()
         return
 
     print("Unique values in 'city_mapped' before mapping:", df['city_mapped'].unique())
-    
-    # Map city values using CITY_TIER_MAPPING; default to 3 if not found.
     df['city_mapped'] = df['city_mapped'].map(CITY_TIER_MAPPING).fillna(3)
-    
     print("Unique values in 'city_mapped' after mapping:", df['city_mapped'].unique())
-    
-    # Rename 'city_mapped' to 'city_tier'
     df = df.rename(columns={'city_mapped': 'city_tier'})
     
-    # Ensure the DataFrame has all 45 columns (as per raw_data_schema, except now with 'city_tier')
-    # Create a mapped schema: replace "city_mapped" with "city_tier" in raw_data_schema.
+    # Construct mapped schema: replace "city_mapped" with "city_tier" in raw_data_schema.
     mapped_schema = raw_data_schema.copy()
     if "city_mapped" in mapped_schema:
         mapped_schema[mapped_schema.index("city_mapped")] = "city_tier"
@@ -116,17 +92,11 @@ def map_city_tier():
     print("City tier mapping applied and saved to 'city_tier_mapped_test_case'.")
 
 def map_categorical_vars():
-    """
-    Process categorical variables by converting values not in the significant lists to 'others'.
-    Reads from 'city_tier_mapped_test_case', updates the categorical columns,
-    and writes to 'categorical_variables_mapped_test_case' using the full schema.
-    """
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query("SELECT * FROM city_tier_mapped_test_case", conn)
-    
     for col in ['first_platform_c', 'first_utm_medium_c', 'first_utm_source_c']:
         if col not in df.columns:
-            print(f"Column '{col}' not found in data.")
+            print(f"Column '{col}' not found.")
             conn.close()
             return
 
@@ -134,7 +104,6 @@ def map_categorical_vars():
     df['first_utm_medium_c'] = df['first_utm_medium_c'].apply(lambda x: x if x in SIGNIFICANT_UTM_MEDIUM else 'others')
     df['first_utm_source_c'] = df['first_utm_source_c'].apply(lambda x: x if x in SIGNIFICANT_UTM_SOURCE else 'others')
     
-    # Reorder DataFrame to match the mapped schema.
     mapped_schema = raw_data_schema.copy()
     if "city_mapped" in mapped_schema:
         mapped_schema[mapped_schema.index("city_mapped")] = "city_tier"
@@ -147,30 +116,26 @@ def map_categorical_vars():
 
 def interactions_mapping():
     """
-    Produce the final interactions table.
-    Reads from 'categorical_variables_mapped_test_case', optionally creates interaction features,
-    then subsets the DataFrame to the model input schema (7 columns) as defined in schema.py,
-    and writes the final output to 'interactions_mapped_test_case'.
+    For this assignment, the final output for training/inference is expected to use only the model input schema.
     """
     conn = sqlite3.connect(DB_NAME)
     df = pd.read_sql_query("SELECT * FROM categorical_variables_mapped_test_case", conn)
-    
-    # (Optional) Create an interaction feature. For example:
+    # Optionally create interaction feature
     if 'first_platform_c' in df.columns and 'first_utm_medium_c' in df.columns:
         df['platform_utm_interaction'] = df['first_platform_c'] + '_' + df['first_utm_medium_c']
     else:
         print("Required columns for interaction mapping not found.")
         conn.close()
         return
-    
-    # The final table should match the model input schema.
+
+    # For final output, subset to model_input_schema (7 columns)
     try:
         df = df[model_input_schema]
     except KeyError as e:
         print("Error subsetting DataFrame with model_input_schema:", e)
         conn.close()
         return
-    
+
     df.to_sql('interactions_mapped_test_case', conn, if_exists='replace', index=False)
     conn.commit()
     conn.close()
