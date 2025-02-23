@@ -1,4 +1,4 @@
-city_tier_mapping = {'bengaluru': 1,
+CITY_TIER_MAPPING = {'bengaluru': 1,
      'chennai': 1,
      'hyderabad': 1,
      'kolkata': 1,

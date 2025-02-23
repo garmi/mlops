@@ -1,42 +1,52 @@
-##############################################################################
-# Import necessary modules
+'''
+filename: lead_scoring_training_pipeline.py
+creator: shashank.gupta
+version: 1
+'''
+#############################################################################
+# Import necessary modules and files
 # #############################################################################
+
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.operators.bash import BashOperator
+from datetime import datetime
+import sys
+import os
 
-from datetime import datetime, timedelta
+sys.path.append('/home/Assignment/')  
+sys.path.append('/home/Assignment/airflow/dags/')  
 
-
-###############################################################################
-# Define default arguments and DAG
-# ##############################################################################
-default_args = {
-    'owner': 'airflow',
-    'start_date': datetime(2022,7,30),
-    'retries' : 1, 
-    'retry_delay' : timedelta(seconds=5)
-}
-
-
-ML_training_dag = DAG(
-                dag_id = 'Lead_scoring_training_pipeline',
-                default_args = default_args,
-                description = 'Training pipeline for Lead Scoring System',
-                schedule_interval = '@monthly',
-                catchup = False
-)
+from utils import encode_features, get_train_model
+from constants import DB_FILE_NAME, DB_PATH
 
 ###############################################################################
-# Create a task for encode_features() function with task_id 'encoding_categorical_variables'
+# Define the DAG
 # ##############################################################################
 
-###############################################################################
-# Create a task for get_trained_model() function with task_id 'training_model'
-# ##############################################################################
+def train_lead_scoring_model():
+    import sqlite3
+    import pandas as pd
+    
+    db_full_path = os.path.join(DB_PATH, DB_FILE_NAME)
+    conn = sqlite3.connect(db_full_path)
+    df = pd.read_sql("SELECT * FROM cleaned_leads", conn)
+    conn.close()
+    
+    df = encode_features(df)
+    best_model = get_train_model(df)
+    print("Model Training Completed Successfully!")
 
+with DAG(
+    dag_id='lead_scoring_training_pipeline',
+    schedule_interval='@daily',
+    start_date=datetime(2025, 2, 22),
+    catchup=False,
+    tags=['lead_scoring', 'training']
+) as dag:
 
-###############################################################################
-# Define relations between tasks
-# ##############################################################################
+    train_model_task = PythonOperator(
+        task_id='train_lead_scoring_model',
+        python_callable=train_lead_scoring_model
+    )
 
+    train_model_task
